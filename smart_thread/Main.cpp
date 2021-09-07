@@ -5,42 +5,84 @@
 
 class stop_token
 {
-	friend class smart_thread;
+	friend class smart_threads;
 
 private:
-	std::shared_ptr<bool> m_pSharedToken = std::make_shared<bool>(false);
+	const bool *m_pStopRequested = nullptr;
 
 public:
-	stop_token() noexcept {}
+	stop_token() noexcept = default;
 
-private:
-	bool &get() noexcept
+	stop_token(const bool *pStopRequested)
 	{
-		return *m_pSharedToken.get();
-	}
-
-	const bool &get() const noexcept
-	{
-		return *m_pSharedToken.get();
-	}
-
-	void request_stop() noexcept
-	{
-		get() = true;
+		m_pStopRequested = pStopRequested;
 	}
 
 public:
-	[[nodiscard]] bool stop_requested() const noexcept
+	bool stop_requested() const noexcept
 	{
-		return get();
+		return *m_pStopRequested;
 	}
 };
 
 class smart_thread
 {
 private:
-	std::shared_ptr<std::thread> m_pThread;
-	stop_token m_threadStopToken{};
+	class internal_thread
+	{
+		friend class smart_thread;
+
+	private:
+		std::thread m_thread;
+		bool        m_bRequestStop = false;
+
+	public:
+		internal_thread() noexcept = default;
+
+		template <class Fn, class ... Args>
+		internal_thread(Fn &&function, Args && ... args) noexcept
+		{
+			m_thread = std::thread(function, stop_token(&m_bRequestStop), args...);
+		}
+
+		~internal_thread() noexcept
+		{
+			if (joinable())
+			{
+				request_stop();
+				join();
+			}
+		}
+
+	private:
+		[[nodiscard]] bool joinable() const noexcept
+		{
+			return m_thread.joinable();
+		}
+
+		void request_stop() noexcept
+		{
+			m_bRequestStop = true;
+		}
+
+		void join() noexcept
+		{
+			m_thread.join();
+		}
+
+		void detach() noexcept
+		{
+			m_thread.detach();
+		}
+
+		[[nodiscard]] std::thread::id get_id() noexcept
+		{
+			return m_thread.get_id();
+		}
+	};
+	
+private:
+	std::shared_ptr<internal_thread> m_pThread;
 
 public:
 	smart_thread() noexcept = default;
@@ -48,25 +90,16 @@ public:
 	template <class Fn, class ... Args>
 	smart_thread(Fn &&function, Args && ... args) noexcept
 	{
-		m_pThread = std::make_shared<std::thread>(function, m_threadStopToken, args...);
+		m_pThread = std::make_shared<internal_thread>(function, args...);
 	}
-
-	~smart_thread() noexcept
-	{
-		if (joinable())
-		{
-			request_stop();
-			join();
-		}
-	}
-
+	
 private:
-	std::thread &get() noexcept
+	internal_thread &get() noexcept
 	{
 		return *m_pThread.get();
 	}
 
-	const std::thread &get() const noexcept
+	const internal_thread &get() const noexcept
 	{
 		return *m_pThread.get();
 	}
@@ -79,7 +112,7 @@ public:
 
 	void request_stop() noexcept
 	{
-		m_threadStopToken.request_stop();
+		get().request_stop();
 	}
 
 	[[nodiscard]] bool joinable() const noexcept
@@ -103,13 +136,18 @@ public:
 	}
 };
 
-void k(stop_token st)
+void k(stop_token st, int i)
 {
-	std::cout << "something\n";
+	while (!st.stop_requested())
+		std::cout << i << std::endl;
+	std::cout << "end\n";
 }
 
 int main()
 {
 	smart_thread thread;
-	thread = smart_thread(k);
+	thread = smart_thread(k, 1);
+	std::this_thread::sleep_for(std::chrono::seconds(1));
+	thread = smart_thread(k, 2);
+	std::this_thread::sleep_for(std::chrono::seconds(1));
 }
